@@ -4,30 +4,26 @@
  Author:	Sam
 
 
-!!! ON UPDATE IotWebConf
--> comment out MDNS (we don't use it)
-   //#define IOTWEBCONF_CONFIG_USE_MDNS
--> password doesn't need te be 8 chars
-  //if ((0 < l) && (l < 8))
-  if (false)
-  }
+!!! TODO: auth CONFIG/UPDATE
 */
 
-#include <ArduinoJson.hpp>
 #define BUFFER_SIZE 500
+#define ADMIN_USERNAME "admin"
 
+#include <ArduinoJson.hpp>
 #include <Ticker.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>			//https://github.com/esp8266/Arduino
 #include <DNSServer.h>
 #include <ESP8266HTTPUpdateServer.h>
 #include <ESP8266WebServer.h>
-#include "IotWebConf.h"				//https://github.com/prampec/IotWebConf
 #include <ArduinoJson.h>			//https://github.com/bblanchon/ArduinoJson
 #include <RingBufHelpers.h>			//https://github.com/wizard97/Embedded_RingBuf_CPP
 #include <RingBufCPP.h>
-#include "Webpages.h"
 #include <EEPROM.h>
+#include "Config.h"					//https://github.com/msraynsford/APConfig
+#include "FirmwareReset.h"
+#include "Webpages.h"
 
 Ticker ticker1;
 Ticker ticker2;
@@ -35,12 +31,6 @@ Ticker ticker3;
 DNSServer dnsServer;
 ESP8266WebServer httpServer(80);
 ESP8266HTTPUpdateServer httpUpdater;
-IotWebConf iotWebConf("sensor", &dnsServer, &httpServer, "holder");
-
-//default values
-char url[200] = "http://server.lan/site/page.php?additionalpar=A";
-char synctime[5] = "5";
-char shottime[5] = "100";
 
 struct Frame {
 	unsigned int min;
@@ -64,37 +54,15 @@ unsigned int frameMax;
 float frameMean;
 
 // -- Callback method declarations.
-void configSaved();
-void wifiConnected();
-boolean connectAp(const char* apName, const char* password);
-void connectWifi(const char* ssid, const char* password);
-IotWebConfParameter custom_url = IotWebConfParameter("URL to call", "custom_url", url, 200, "text", url);
-IotWebConfParameter custom_synctime = IotWebConfParameter("Seconds between URL calls", "custom_synctime", synctime, 5, "number","5", synctime , "min='1' max='99999' step='1'");
-IotWebConfParameter custom_shottime = IotWebConfParameter("Milliseconds between samples", "custom_shottime", shottime, 5, "number", "100", shottime, "min='1' max='99999' step='1'");
+WiFiEventHandler _onStationModeConnectedHandler = WiFi.onStationModeConnected(onStationModeConnected);
+WiFiEventHandler _onStationModeDisconnectedHandler = WiFi.onStationModeDisconnected(onStationModeDisconnected);
+WiFiEventHandler _onStationModeDHCPTimeoutHandler = WiFi.onStationModeDHCPTimeout(onStationModeDHCPTimeout);
+WiFiEventHandler _onStationModeGotIPHandler = WiFi.onStationModeGotIP(onStationModeGotIP);
 
 //flags
 bool needsUpload = false;
 bool needsReading = false;
 bool needsRestart = false;
-
-// -- This is an OOP technique to override behaviour of the existing
-// IotWebConfHtmlFormatProvider. Here two method are overriden from
-// the original class. See IotWebConf.h for all potentially overridable
-// methods of IotWebConfHtmlFormatProvider .
-class CustomHtmlFormatProvider : public IotWebConfHtmlFormatProvider
-{
-protected:
-	String getStyle() override
-	{
-		return String(FPSTR(WEBPAGES_STYLE));
-	}
-	String getBodyInner() override
-	{
-		return String(FPSTR(WEBPAGES_MENU1)) + COMPANY + String(FPSTR(WEBPAGES_MENU2));
-	}
-};
-// -- An instance must be created from the class defined above.
-CustomHtmlFormatProvider customHtmlFormatProvider;
 
 void blink()
 {
@@ -108,35 +76,51 @@ void setup() {
 	pinMode(BUILTIN_LED, OUTPUT);
 	ticker3.attach_ms(100, blink);
 
-	//ap parameters
-	iotWebConf.addParameter(&custom_url);
-	iotWebConf.addParameter(&custom_synctime);
-	iotWebConf.addParameter(&custom_shottime);
-	iotWebConf.setConfigSavedCallback(&configSaved);
-	iotWebConf.setWifiConnectionCallback(&wifiConnected);
-	iotWebConf.setApConnectionHandler(&connectAp);
-	iotWebConf.setWifiConnectionHandler(&connectWifi);
-	iotWebConf.setHtmlFormatProvider(&customHtmlFormatProvider);
-	iotWebConf.getApPasswordParameter()->label = "Configuration password";
-	iotWebConf.skipApStartup();
-	//TODO: configpage password?
+	Serial.println(F("\nInit"));
+
+	bool shouldreset = checkResetFlag();
+
+	Config.InitConfig();
+	Config.LoadConfig();
+	//Check to see if the flag is still set from the previous boot
+	if (shouldreset) {
+		//Do the firmware reset here
+		Serial.println(F("Resetting to factory defaults"));
+		Config.ResetConfig();
+	} 
+	Config.PrintConfig();
+
+	//Start the wifi
+	WiFi.mode(WIFI_AP_STA);
+	WiFi.enableSTA(false);
+	WiFi.softAP(Config.GetOwnSSID(), "", 1, false, 1);
+
+	/* Setup the DNS server redirecting all the domains to the apIP */
+	dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+	dnsServer.start(53, "*", WiFi.softAPIP());
+
+	httpServer.begin();
 
 	// -- Set up required URL handlers on the web server.
 	httpUpdater.setup(&httpServer);
+	if (Config.config.adminpass[0] != '\0') httpUpdater.updateCredentials(ADMIN_USERNAME, Config.config.adminpass);
 	httpServer.on("/", handleRoot);
 	httpServer.on("/restart", handleRestart);
 	httpServer.on("/data", handleData);
-	httpServer.on("/config", [] { iotWebConf.handleConfig(); });
-	httpServer.onNotFound([]() { iotWebConf.handleNotFound(); });
+	httpServer.on("/config", handleAdmin);
+	httpServer.onNotFound([]() { Webpages.handleNotFound(&httpServer); });
 	httpServer.begin();
 
-	// -- Initializing the configuration.
-	iotWebConf.init();
+	// -- Try to connect to the AP
+	if (Config.GetOwnSSID() != Config.config.ssid) {
+		WiFi.enableSTA(true);
+		WiFi.begin(Config.config.ssid, Config.config.pass);
+	}
 
 	//ticker1.attach_ms(atoi(shottime), []() { needsReading = true;});
-	ticker1.attach_ms(atoi(shottime), readSensor);
-	ticker2.attach(atoi(synctime), []() { needsUpload = true;});
-	samplesInFrame = atoi(synctime) * 1000 / atoi(shottime);
+	ticker1.attach_ms(atoi(Config.config.shot), readSensor);
+	ticker2.attach(atoi(Config.config.sync), []() { needsUpload = true;});
+	samplesInFrame = atoi(Config.config.sync) * 1000 / atoi(Config.config.shot);
 	samplesCounter = 0;
 	frameMin = UINT_MAX;
 	frameMean = 0;
@@ -145,7 +129,8 @@ void setup() {
 }
 
 void loop() {
-	iotWebConf.doLoop();
+	dnsServer.processNextRequest();
+	httpServer.handleClient();
 	if (needsReading) {
 		readSensor();
 		needsReading = false;
@@ -158,22 +143,21 @@ void loop() {
 		doRestart();
 		needsRestart = false;
 	}
-	//update led according to state
-	switch (iotWebConf.getState()) {
-	case IOTWEBCONF_STATE_BOOT:
+	//check WiFi state
+	switch (WiFi.status()) {
+	case WL_IDLE_STATUS:
 		ticker3.attach_ms(100, blink);
 		break;
-	case IOTWEBCONF_STATE_AP_MODE:
-	case IOTWEBCONF_STATE_NOT_CONFIGURED:
+	case WL_NO_SSID_AVAIL:  //not found
+	case WL_CONNECT_FAILED: //password incorrect
 		ticker3.attach_ms(600, blink);
 		break;
-	case IOTWEBCONF_STATE_CONNECTING:
+	case WL_CONNECTION_LOST://signal lost
+	case WL_DISCONNECTED:   //not configured in station mode
 		ticker3.attach_ms(300, blink);
 		break;
-	case IOTWEBCONF_STATE_ONLINE:
+	case WL_CONNECTED:
 		ticker3.detach();
-		//stop the self-config AP if nobody is connected
-		if(WiFi.softAPgetStationNum() < 1) WiFi.softAPdisconnect(true);	
 		break;
 	default:
 		ticker3.attach_ms(600, blink);
@@ -206,10 +190,9 @@ void uploadData() {
 	HTTPClient http;						//Declare object of class HTTPClient
 
 	for (int i = 0; i < framebuffer.numElements(); i++) {
-		http.begin(url);					//Specify request destination
+		http.begin(Config.config.url);					//Specify request destination
 		http.addHeader(F("Content-Type"), F("text/plain"));  //Specify content-type header
 		http.addHeader(F("Accept"), F("text/plain"));
-		Serial.println(F("Uploading frame"));
 
 		Frame frame;
 		String data;
@@ -228,10 +211,10 @@ void uploadData() {
 		http.getString().substring(0, 398).toCharArray(payload, 400, 0);	//Get the response payload
 		http.end();							//Close connection
 
-		Serial.println(httpCode);			//Print HTTP return code
 		if (httpCode != 200 || !(payload[0] == 'o' && payload[1] =='k') ) {
 			//Upload failed, add frame back to buffer
-			Serial.println(F("Upload failed"));
+			Serial.print(F("Upload failed, HTTP "));
+			Serial.println(httpCode);
 			framebuffer.add(frame);
 			lastUploadErrorHttpCode = httpCode;
 			lastUploadErrorTime = millis();
@@ -250,44 +233,52 @@ void uploadData() {
 
 void handleRoot() {
 	digitalWrite(LED_BUILTIN, LOW);
-	// -- Let IotWebConf test and handle captive portal requests.
-	if (iotWebConf.handleCaptivePortal())
+	// -- Test and handle captive portal requests.
+	if (Webpages.handleCaptivePortal(&httpServer))
 	{
 		// -- Captive portal request were already served.
 		return;
 	}
-	String fullpage = Webpages.getStdHeader();
+	httpServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+	httpServer.send(200, F("text/html"), Webpages.getStdHeader());
 	String mainpage = FPSTR(WEBPAGES_MAIN);
 	mainpage.replace(F("{dev}"), Webpages.getDeviceInfo());
 	mainpage.replace(F("{net}"), Webpages.getNetworkInfo());
 	mainpage.replace(F("{upl}"), Webpages.getUploadInfo());
 	mainpage.replace(F("{ql}"), (String)framebuffer.numElements());
-	fullpage += mainpage;
-	fullpage += Webpages.getStdFooter();
-	httpServer.send(200, F("text/html"), fullpage);
+	httpServer.sendContent(mainpage);
+	httpServer.sendContent(Webpages.getStdFooter());
+	digitalWrite(LED_BUILTIN, HIGH);
+}
+
+void handleAdmin() {
+	digitalWrite(LED_BUILTIN, LOW);
+	// -- Authenticate
+	if (Config.config.adminpass[0] != '\0' && !httpServer.authenticate(ADMIN_USERNAME, Config.config.adminpass)) {
+		Serial.println(F("Auth required"));
+		httpServer.requestAuthentication();
+		return;
+	}
+	Webpages.serveAdmin(&httpServer, &needsRestart);
+
 	digitalWrite(LED_BUILTIN, HIGH);
 }
 
 void handleRestart() {
 	digitalWrite(LED_BUILTIN, LOW);
-	String fullpage = Webpages.getStdHeader();
+	httpServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
+	httpServer.send(200, F("text/html"), Webpages.getStdHeader());
 	if (httpServer.hasArg("r")) {
-		fullpage += FPSTR(WEBPAGES_REBOOTING);
+		httpServer.sendContent(FPSTR(WEBPAGES_REBOOTING));
 	}
 	else {
-		fullpage += FPSTR(WEBPAGES_REBOOT);
+		httpServer.sendContent(FPSTR(WEBPAGES_REBOOT));
 	}
-	fullpage += Webpages.getStdFooter();
-	httpServer.send(200, F("text/html"), fullpage);
+	httpServer.sendContent(Webpages.getStdFooter());
 	digitalWrite(LED_BUILTIN, HIGH);
 	if (httpServer.hasArg("r")) {
 		if (httpServer.hasArg("clearwifi")) {
-			//invalidate the config version
-			for (byte t = 0; t < IOTWEBCONF_CONFIG_VERSION_LENGTH; t++)
-			{
-				EEPROM.write(IOTWEBCONF_CONFIG_START + t, 0);
-			}
-			EEPROM.commit();
+			Config.ResetConfig();
 		}
 		needsRestart = true;
 	}
@@ -322,26 +313,32 @@ void handleData() {
 	digitalWrite(LED_BUILTIN, HIGH);
 }
 
-void configSaved() {
-	Serial.println(F("Configuration was updated."));
-	doRestart();
-}
-
-void wifiConnected() {
+void onStationModeGotIP(WiFiEventStationModeGotIP event) {
 	//if you get here you have connected to the WiFi
-	Serial.print(F("Local ip: "));
-	Serial.println(WiFi.localIP());
+	Serial.print(F("Local ip: ")); 
+	Serial.println(event.ip);
+	Serial.print(F("Gateway: "));
+	Serial.println(event.gw);
 	//keep LED off
 	digitalWrite(BUILTIN_LED, HIGH);
+	//stop the self-config AP if nobody is connected
+	if (WiFi.softAPgetStationNum() < 1) {
+		Serial.println(F("Stopping AP"));
+		dnsServer.stop();
+		WiFi.softAPdisconnect(true);
+	}
 }
 
-boolean connectAp(const char* apName, const char* password) {
-	Serial.println(F("Entered config mode"));
-	return WiFi.softAP(apName);
+void onStationModeConnected(WiFiEventStationModeConnected event) {
+	Serial.print(F("Connected to WiFi: "));
+	Serial.println(event.ssid);
 }
 
-void connectWifi(const char* ssid, const char* password) {
-	Serial.print(F("Connecting to WiFi: "));
-	Serial.println(ssid);
-	WiFi.begin(ssid, password);
+void onStationModeDisconnected(WiFiEventStationModeDisconnected event) {
+	Serial.print(F("Disonnected from WiFi, reason: "));
+	Serial.println(event.reason);
+}
+
+void onStationModeDHCPTimeout() {
+	Serial.println(F("DHCP timeout."));
 }
