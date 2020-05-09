@@ -7,6 +7,13 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WifiAnalogSensor", "WifiAna
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Server", "Server\Server.vcxitems", "{87F8C93B-4272-40CC-ACBA-874BE57B748D}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{EB4DE564-877A-4998-8F28-0EDC51639A92}"
+	ProjectSection(SolutionItems) = preProject
+		docs\configpage.PNG = docs\configpage.PNG
+		docs\mainpage.PNG = docs\mainpage.PNG
+		docs\README.md = docs\README.md
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x86 = Debug|x86
