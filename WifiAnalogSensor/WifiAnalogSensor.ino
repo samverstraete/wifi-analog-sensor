@@ -4,11 +4,11 @@
  Author:	Sam
 
 
-!!! TODO: auth CONFIG/UPDATE
 */
 
 #define BUFFER_SIZE 500
 #define ADMIN_USERNAME "admin"
+#define LED_BUILTIN 2 //NodeMCU v3 only
 
 #include <ArduinoJson.hpp>
 #include <Ticker.h>
@@ -28,6 +28,7 @@
 Ticker ticker1;
 Ticker ticker2;
 Ticker ticker3;
+Ticker ticker4;
 DNSServer dnsServer;
 ESP8266WebServer httpServer(80);
 ESP8266HTTPUpdateServer httpUpdater;
@@ -53,16 +54,11 @@ unsigned int frameMin;
 unsigned int frameMax;
 float frameMean;
 
-// -- Callback method declarations.
-WiFiEventHandler _onStationModeConnectedHandler = WiFi.onStationModeConnected(onStationModeConnected);
-WiFiEventHandler _onStationModeDisconnectedHandler = WiFi.onStationModeDisconnected(onStationModeDisconnected);
-WiFiEventHandler _onStationModeDHCPTimeoutHandler = WiFi.onStationModeDHCPTimeout(onStationModeDHCPTimeout);
-WiFiEventHandler _onStationModeGotIPHandler = WiFi.onStationModeGotIP(onStationModeGotIP);
-
 //flags
 bool needsUpload = false;
 bool needsReading = false;
 bool needsRestart = false;
+bool reconfigMode = false;
 
 void blink()
 {
@@ -76,34 +72,28 @@ void setup() {
 	pinMode(BUILTIN_LED, OUTPUT);
 	ticker3.attach_ms(100, blink);
 
-	Serial.println(F("\nInit"));
+	Serial.println(F("WifiAnalogSensor"));
 
-	bool shouldreset = checkResetFlag();
+	reconfigMode = checkResetFlag();
 
 	Config.InitConfig();
 	Config.LoadConfig();
-	//Check to see if the flag is still set from the previous boot
-	if (shouldreset) {
-		//Do the firmware reset here
-		Serial.println(F("Resetting to factory defaults"));
-		Config.ResetConfig();
-	} 
 	Config.PrintConfig();
+	yield();
 
 	//Start the wifi
 	WiFi.mode(WIFI_AP_STA);
 	WiFi.enableSTA(false);
-	WiFi.softAP(Config.GetOwnSSID(), "", 1, false, 1);
+	//Check to see if the flag is still set from the previous boot
+	if (reconfigMode) WiFi.softAP(Config.GetOwnSSID(), "");	
 
 	/* Setup the DNS server redirecting all the domains to the apIP */
 	dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
 	dnsServer.start(53, "*", WiFi.softAPIP());
 
-	httpServer.begin();
-
-	// -- Set up required URL handlers on the web server.
+	//Set up required URL handlers on the web server.
 	httpUpdater.setup(&httpServer);
-	if (Config.config.adminpass[0] != '\0') httpUpdater.updateCredentials(ADMIN_USERNAME, Config.config.adminpass);
+	if (Config.config.adminpass[0] != '\0' && !reconfigMode) httpUpdater.updateCredentials(ADMIN_USERNAME, Config.config.adminpass);
 	httpServer.on("/", handleRoot);
 	httpServer.on("/restart", handleRestart);
 	httpServer.on("/data", handleData);
@@ -111,13 +101,17 @@ void setup() {
 	httpServer.onNotFound([]() { Webpages.handleNotFound(&httpServer); });
 	httpServer.begin();
 
-	// -- Try to connect to the AP
-	if (Config.GetOwnSSID() != Config.config.ssid) {
-		WiFi.enableSTA(true);
-		WiFi.begin(Config.config.ssid, Config.config.pass);
+	
+	if (reconfigMode) {
+		//Try to connect after 10 minutes 
+		ticker4.once(600, []() {
+			connectWifi();
+		});
+	} else {
+		//Try to connect to the AP now
+		connectWifi();
 	}
 
-	//ticker1.attach_ms(atoi(shottime), []() { needsReading = true;});
 	ticker1.attach_ms(atoi(Config.config.shot), readSensor);
 	ticker2.attach(atoi(Config.config.sync), []() { needsUpload = true;});
 	samplesInFrame = atoi(Config.config.sync) * 1000 / atoi(Config.config.shot);
@@ -254,7 +248,7 @@ void handleRoot() {
 void handleAdmin() {
 	digitalWrite(LED_BUILTIN, LOW);
 	// -- Authenticate
-	if (Config.config.adminpass[0] != '\0' && !httpServer.authenticate(ADMIN_USERNAME, Config.config.adminpass)) {
+	if (!reconfigMode && Config.config.adminpass[0] != '\0' && !httpServer.authenticate(ADMIN_USERNAME, Config.config.adminpass)) {
 		Serial.println(F("Auth required"));
 		httpServer.requestAuthentication();
 		return;
@@ -266,6 +260,11 @@ void handleAdmin() {
 
 void handleRestart() {
 	digitalWrite(LED_BUILTIN, LOW);
+	if (!reconfigMode && httpServer.hasArg("clear") && Config.config.adminpass[0] != '\0' && !httpServer.authenticate(ADMIN_USERNAME, Config.config.adminpass)) {
+		Serial.println(F("Auth required"));
+		httpServer.requestAuthentication();
+		return;
+	}
 	httpServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
 	httpServer.send(200, F("text/html"), Webpages.getStdHeader());
 	if (httpServer.hasArg("r")) {
@@ -277,7 +276,7 @@ void handleRestart() {
 	httpServer.sendContent(Webpages.getStdFooter());
 	digitalWrite(LED_BUILTIN, HIGH);
 	if (httpServer.hasArg("r")) {
-		if (httpServer.hasArg("clearwifi")) {
+		if (httpServer.hasArg("clear")) {
 			Config.ResetConfig();
 		}
 		needsRestart = true;
@@ -286,7 +285,10 @@ void handleRestart() {
 
 void doRestart() {
 	Serial.println(F("Rebooting..."));
-	ticker1.once(1, []() {ESP.restart();});
+	ticker1.once(1, []() {
+		WiFi.disconnect(true); 
+		ESP.restart();
+	});
 	ticker2.detach();
 	ticker3.attach_ms(50, blink);
 }
@@ -313,6 +315,14 @@ void handleData() {
 	digitalWrite(LED_BUILTIN, HIGH);
 }
 
+void connectWifi() {
+	if (Config.GetOwnSSID() != Config.config.ssid) {
+		Serial.println(F("STA trying to connect"));
+		WiFi.enableSTA(true);
+		WiFi.begin(Config.config.ssid, Config.config.pass);
+	}
+}
+
 void onStationModeGotIP(WiFiEventStationModeGotIP event) {
 	//if you get here you have connected to the WiFi
 	Serial.print(F("Local ip: ")); 
@@ -335,10 +345,23 @@ void onStationModeConnected(WiFiEventStationModeConnected event) {
 }
 
 void onStationModeDisconnected(WiFiEventStationModeDisconnected event) {
-	Serial.print(F("Disonnected from WiFi, reason: "));
+	Serial.print(F("Disconnected from WiFi, reason: "));
 	Serial.println(event.reason);
+	if (event.reason == 201) {
+		//wait some time before trying to reconnect, to allow reliable softAP connections
+		WiFi.enableSTA(false);
+		ticker4.once(10, []() {
+			connectWifi();
+		});
+	}
 }
 
 void onStationModeDHCPTimeout() {
-	Serial.println(F("DHCP timeout."));
+	Serial.println(F("DHCP timeout"));
 }
+
+// -- Callback method declarations.
+WiFiEventHandler _onStationModeConnectedHandler = WiFi.onStationModeConnected(onStationModeConnected);
+WiFiEventHandler _onStationModeDisconnectedHandler = WiFi.onStationModeDisconnected(onStationModeDisconnected);
+WiFiEventHandler _onStationModeDHCPTimeoutHandler = WiFi.onStationModeDHCPTimeout(onStationModeDHCPTimeout);
+WiFiEventHandler _onStationModeGotIPHandler = WiFi.onStationModeGotIP(onStationModeGotIP);

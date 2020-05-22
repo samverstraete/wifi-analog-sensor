@@ -10,6 +10,10 @@ String ConfigClass::GetOwnSSID() {
 
 // Declare an area of EEPROM where the variables are stored
 void ConfigClass::InitConfig() {
+#ifdef USESERIAL
+    Serial.print(F("Init "));
+    Serial.println(sizeof(config));
+#endif 
     EEPROM.begin(sizeof(config));
 }
 
@@ -43,10 +47,11 @@ void ConfigClass::ResetConfig() {
 // Checks all of the bytes in the string array to make sure they are valid characters
 bool ConfigClass::ValidateString(char* value, config_valid_t type, u_short minlength) {
     if (strlen(value) < minlength) return false;
+    if (strlen(value) > UINT16_MAX) return false;
 
     bool valid = true;
     //Check each character in the string to make sure it is alphanumeric or space
-    for (uint8_t i = 0; i < strlen(value); i++) {
+    for (uint16_t i = 0; i < strlen(value); i++) {
         switch (type)
         {
         case ConfigClass::ALL:
@@ -89,6 +94,9 @@ void ConfigClass::LoadConfig() {
     eepromValid &= ValidateString(eepromConfig.shot, ConfigClass::NUMBER, 1);
 
     if (eepromValid) {
+#ifdef USESERIAL
+        Serial.println(F("Invalid EEPROM"));
+#endif
         strcpy(config.ssid, eepromConfig.ssid);
         strcpy(config.pass, eepromConfig.pass);
         strcpy(config.name, eepromConfig.name);

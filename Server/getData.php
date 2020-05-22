@@ -16,12 +16,16 @@ $table = array(
 );
 
 $todaysDate = date("Y-m-d");
-$query = "SELECT * FROM `sensors` WHERE DATE(time) = '$todaysDate' ORDER by time DESC";
+$datefilter = "DATE(time) = '$todaysDate'";
+if(isset($_REQUEST['from'])) {
+	$datefilter = "DATE(time) BETWEEN '" . $_REQUEST['from'] . "' AND '" . $_REQUEST['to'] . "'";
+}
+$query = "SELECT * FROM `sensors` WHERE $datefilter ORDER by time DESC";
 
 if ($result = DB::$link->query($query)) {
 	while($r = $result->fetch_assoc()) {
 		$date = new DateTime($r['time']);
-		$sdate = "Date(".date_format($date, 'Y').", ".((int) date_format($date, 'm') - 1).", ".date_format($date, 'd').", ".date_format($date, 'H').", ".date_format($date, 'i').", ".date_format($date, 's').")";
+		$sdate = "Date(".$date->format('Y, m, d, H, i, s').")"; 
 		$table['rows'][] = array('c' => array(
 			array('v' => $sdate),
 			array('v' => $r['max']),

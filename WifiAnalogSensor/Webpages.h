@@ -82,8 +82,8 @@ const char WEBPAGES_MAIN[] PROGMEM = R"=====(
 const char WEBPAGES_REBOOT[] PROGMEM = R"=====(
 			<h3>Restart this device?</h3>
 			<form action="/restart?r" method="POST">
-			<p><input type="checkbox" id="clearwifi" name="clearwifi">
-			<label for="clearwifi">Clear WiFi settings</label></p><br>
+			<p><input type="checkbox" id="clear" name="clear">
+			<label for="clear">Factory reset</label></p><br>
 			<button type="submit" class="btn btn-a btn-sm smooth">Restart now</a>
 			</form>
 	)=====";
@@ -105,7 +105,7 @@ const char WEBPAGES_ADMIN[] PROGMEM = R"=====(
 			<label for='pwd'>Configuration password</label><input type='password' id='pwd' name='pwd' maxlength=32 value='{pwd}' /><br>
 		</div><br>
 		<div class='msg'>
-			<label for='ssid'>SSID</label><input name='ssid' id='ssid' type='text' minlength='8' maxlength='16' value='{ssid}'><br>
+			<label for='ssid'>SSID</label><input name='ssid' id='ssid' type='text' minlength='1' maxlength='32' value='{ssid}'><br>
 			<label for='appwd'>WiFi password</label><input id='appwd' name='appwd' type='password' minlength='8' maxlength='32' value='{appwd}'>
 		</div><br>
 		<div class='msg'>
