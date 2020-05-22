@@ -105,7 +105,7 @@ const char WEBPAGES_ADMIN[] PROGMEM = R"=====(
 			<label for='pwd'>Configuration password</label><input type='password' id='pwd' name='pwd' maxlength=32 value='{pwd}' /><br>
 		</div><br>
 		<div class='msg'>
-			<label for='ssid'>SSID</label><input name='ssid' id='ssid' type='text' minlength='8' maxlength='16' value='{ssid}'><br>
+			<label for='ssid'>SSID</label><input name='ssid' id='ssid' type='text' minlength='1' maxlength='32' value='{ssid}'><br>
 			<label for='appwd'>WiFi password</label><input id='appwd' name='appwd' type='password' minlength='8' maxlength='32' value='{appwd}'>
 		</div><br>
 		<div class='msg'>

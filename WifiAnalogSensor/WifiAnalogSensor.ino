@@ -4,11 +4,11 @@
  Author:	Sam
 
 
-!!! TODO: auth CONFIG/UPDATE
 */
 
 #define BUFFER_SIZE 500
 #define ADMIN_USERNAME "admin"
+#define LED_BUILTIN 2 //NodeMCU v3 only
 
 #include <ArduinoJson.hpp>
 #include <Ticker.h>
@@ -28,6 +28,7 @@
 Ticker ticker1;
 Ticker ticker2;
 Ticker ticker3;
+Ticker ticker4;
 DNSServer dnsServer;
 ESP8266WebServer httpServer(80);
 ESP8266HTTPUpdateServer httpUpdater;
@@ -53,12 +54,6 @@ unsigned int frameMin;
 unsigned int frameMax;
 float frameMean;
 
-// -- Callback method declarations.
-WiFiEventHandler _onStationModeConnectedHandler = WiFi.onStationModeConnected(onStationModeConnected);
-WiFiEventHandler _onStationModeDisconnectedHandler = WiFi.onStationModeDisconnected(onStationModeDisconnected);
-WiFiEventHandler _onStationModeDHCPTimeoutHandler = WiFi.onStationModeDHCPTimeout(onStationModeDHCPTimeout);
-WiFiEventHandler _onStationModeGotIPHandler = WiFi.onStationModeGotIP(onStationModeGotIP);
-
 //flags
 bool needsUpload = false;
 bool needsReading = false;
@@ -76,7 +71,7 @@ void setup() {
 	pinMode(BUILTIN_LED, OUTPUT);
 	ticker3.attach_ms(100, blink);
 
-	Serial.println(F("\nInit"));
+	Serial.println(F("WifiAnalogSensor"));
 
 	bool shouldreset = checkResetFlag();
 
@@ -89,17 +84,16 @@ void setup() {
 		Config.ResetConfig();
 	} 
 	Config.PrintConfig();
+	yield();
 
 	//Start the wifi
 	WiFi.mode(WIFI_AP_STA);
 	WiFi.enableSTA(false);
-	WiFi.softAP(Config.GetOwnSSID(), "", 1, false, 1);
+	WiFi.softAP(Config.GetOwnSSID(), "");
 
 	/* Setup the DNS server redirecting all the domains to the apIP */
 	dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
 	dnsServer.start(53, "*", WiFi.softAPIP());
-
-	httpServer.begin();
 
 	// -- Set up required URL handlers on the web server.
 	httpUpdater.setup(&httpServer);
@@ -117,7 +111,6 @@ void setup() {
 		WiFi.begin(Config.config.ssid, Config.config.pass);
 	}
 
-	//ticker1.attach_ms(atoi(shottime), []() { needsReading = true;});
 	ticker1.attach_ms(atoi(Config.config.shot), readSensor);
 	ticker2.attach(atoi(Config.config.sync), []() { needsUpload = true;});
 	samplesInFrame = atoi(Config.config.sync) * 1000 / atoi(Config.config.shot);
@@ -286,7 +279,10 @@ void handleRestart() {
 
 void doRestart() {
 	Serial.println(F("Rebooting..."));
-	ticker1.once(1, []() {ESP.restart();});
+	ticker1.once(1, []() {
+		WiFi.disconnect(true); 
+		ESP.restart();
+	});
 	ticker2.detach();
 	ticker3.attach_ms(50, blink);
 }
@@ -335,10 +331,27 @@ void onStationModeConnected(WiFiEventStationModeConnected event) {
 }
 
 void onStationModeDisconnected(WiFiEventStationModeDisconnected event) {
-	Serial.print(F("Disonnected from WiFi, reason: "));
+	Serial.print(F("Disconnected from WiFi, reason: "));
 	Serial.println(event.reason);
+	if (event.reason == 201) {
+		//wait some time before trying to reconnect, to allow reliable softAP connections
+		WiFi.enableSTA(false);
+		ticker1.once(10, []() {
+			Serial.println(F("STA trying to reconnect"));
+			if (Config.GetOwnSSID() != Config.config.ssid) {
+				WiFi.enableSTA(true);
+				WiFi.begin(Config.config.ssid, Config.config.pass);
+			}
+		});
+	}
 }
 
 void onStationModeDHCPTimeout() {
-	Serial.println(F("DHCP timeout."));
+	Serial.println(F("DHCP timeout"));
 }
+
+// -- Callback method declarations.
+WiFiEventHandler _onStationModeConnectedHandler = WiFi.onStationModeConnected(onStationModeConnected);
+WiFiEventHandler _onStationModeDisconnectedHandler = WiFi.onStationModeDisconnected(onStationModeDisconnected);
+WiFiEventHandler _onStationModeDHCPTimeoutHandler = WiFi.onStationModeDHCPTimeout(onStationModeDHCPTimeout);
+WiFiEventHandler _onStationModeGotIPHandler = WiFi.onStationModeGotIP(onStationModeGotIP);

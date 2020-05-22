@@ -111,7 +111,7 @@ String WebpagesClass::getNetworkInfo() {
 
 String WebpagesClass::getUploadInfo() {
 	String html = "";
-	//TODO
+	html += F("<p>Firmware: <span>1.0</span></p>");
 	html += F("<p>System boot time: <span id=\"ls\"></span></p>");
 	html += F("<p>Current queue length: <span id=\"q\">{ql}</span></p>");
 	html += F("<p>Last successfull upload: <span id=\"su\"></span></p>");
